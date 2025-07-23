@@ -1,0 +1,35 @@
+{
+  "name": "planka-telegram-integration",
+  "version": "1.0.0",
+  "description": "Planka + Telegram Bot Integration with AI Task Creation",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "form-data": "^4.0.3",
+    "node-cron": "^4.1.0",
+    "node-telegram-bot-api": "^0.61.0",
+    "openai": "^5.1.1"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  },
+  "keywords": [
+    "planka",
+    "telegram",
+    "bot",
+    "ai",
+    "kanban",
+    "task-management"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
