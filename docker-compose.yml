@@ -1,13 +1,15 @@
+version: "3.9"
+
 services:
-  planka-bot:
-    image: planka-bot         
-    build: .
-    container_name: planka-bot
+  demo-bot:
+    build: .                 
+    image: demo-personal-bot 
+    container_name: demo-ai-bot
     restart: unless-stopped
-    env_file: .env
-    ports:
-      - "3001:3000"
-    volumes:
-      - .:/app
-      - /app/node_modules
+    env_file: .env        
     command: npm start
+    ports:
+      - "3002:3000"
+    volumes:
+      - .:/app               
+      - /app/node_modules   

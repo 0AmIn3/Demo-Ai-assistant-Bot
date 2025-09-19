@@ -1,5 +1,5 @@
 const { loadDB, saveDB } = require('../../database/db');
-const { OWNER_USERNAME } = require('../../config/constants');
+const { getOwnerUsername, OWNER_USERNAME } = require('../../config/constants');
 const { hasActiveCreationSession } = require('../utils/helpers');
 const taskService = require('../services/taskService');
 const plankaService = require('../services/plankaService');
@@ -44,10 +44,22 @@ function handleStartWithParam(bot, userStates) {
 
 // Обработчик команды /start без параметра
 function handleStart(bot) {
-  bot.onText(/\/start$/, (msg) => {
+  bot.onText(/\/start$/, async (msg) => {
     const chatId = msg.chat.id;
-    bot.sendMessage(chatId,
-      'Для регистрации используйте ссылку, предоставленную владельцем группы.'
+    const isOwner = chatId === (getOwnerUsername(chatId) || OWNER_USERNAME);
+
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: '🤖 Помощь', callback_data: 'show_help' }],
+        [{ text: '📋 Мои задачи', callback_data: 'show_my_tasks' }],
+        ...(isOwner ? [[{ text: '🔧 Панель владельца', callback_data: 'owner_panel' }]] : [])
+      ]
+    };
+
+    await bot.sendMessage(
+      chatId,
+      `Добро пожаловать! Выберите действие:`,
+      { reply_markup: keyboard }
     );
   });
 }
@@ -66,7 +78,7 @@ function handleCreateTask(bot, userStates, taskCreationSessions) {
     }
 
     // Проверяем, что команда от владельца
-    if (username !== OWNER_USERNAME) {
+    if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
       await bot.sendMessage(chatId, '❌ Эта команда доступна только владельцу');
       return;
     }
@@ -176,7 +188,7 @@ function handleHelp(bot) {
         '📋 /my\\_tasks - просмотр ваших задач\n' +
         '❓ /help - эта справка\n\n';
 
-      if (username === OWNER_USERNAME) {
+      if (chatId === (getOwnerUsername(chatId) || OWNER_USERNAME)) {
         helpMessage +=
           '🔧 *Команды владельца:*\n\n' +
           '📝 /create\\_task - создать задачу\n' +
@@ -202,7 +214,7 @@ function handleHelp(bot) {
         '🤖 *Команды в группе:*\n\n' +
         '❓ /help - эта справка\n\n';
 
-      if (username === OWNER_USERNAME) {
+      if (chatId === (getOwnerUsername(chatId) || OWNER_USERNAME)) {
         helpMessage +=
           '🔧 *Команды владельца:*\n' +
           '📊 /stats - показать статистику по задачам\n' +

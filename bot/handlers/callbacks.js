@@ -1,5 +1,5 @@
 const { loadDB, saveDB } = require('../../database/db');
-const { OWNER_USERNAME } = require('../../config/constants');
+const { getOwnerUsername, OWNER_USERNAME } = require('../../config/constants');
 const { createAssigneeKeyboard } = require('../utils/keyboards');
 const taskService = require('../services/taskService');
 const { escapeMarkdown } = require('../utils/helpers');
@@ -18,49 +18,109 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
       taskCreationSessions[id].chatId === chatId &&
       taskCreationSessions[id].userId === userId
     );
-    if (data === 'show_statistics') {
-      if (username !== OWNER_USERNAME) {
+
+    // 1) «🤖 Помощь» ─ показывает то же самое, что команда /help
+    if (data === 'show_help') {
+      const isPrivate = callbackQuery.message.chat.type === 'private';
+      const isOwner = chatId === (getOwnerUsername(chatId) || OWNER_USERNAME);
+
+      // вынесем формирование текста в отдельную функцию,
+      // чтобы не дублировать логику handleHelp
+      const helpMessage = generateHelpMessage(isPrivate, isOwner);
+
+      await bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    // 2) «🔧 Панель владельца» ─ мини‑меню для админа
+    if (data === 'owner_panel') {
+
+      if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
         await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
         return;
       }
 
-      await statisticsService.generateStatistics('30d', chatId, bot);
+      const ownerKb = {
+        inline_keyboard: [
+          [{ text: '📊 Статистика (30 дней)', callback_data: 'stats_30d' }],
+          [{ text: '👥 Статистика сотрудников', callback_data: 'employee_stats' }],
+          [{ text: '⚠️ Проблемные задачи', callback_data: 'problem_tasks' }],
+          [{ text: '❌ Закрыть', callback_data: 'close_owner_panel' }]
+        ]
+      };
+
+      await bot.editMessageText(
+        '🔧 *Панель владельца*\nВыберите действие:',
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+          reply_markup: ownerKb
+        }
+      );
+
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+
+    // 3) «❌ Закрыть» внутри панели владельца
+    if (data === 'close_owner_panel') {
+      try {
+        await bot.deleteMessage(chatId, messageId);
+      } catch (e) {
+        // если удалить нельзя (например, нет прав) – просто заменим текст
+        await bot.editMessageText('✅ Панель закрыта', {
+          chat_id: chatId,
+          message_id: messageId
+        });
+      }
+      await bot.answerCallbackQuery(callbackQuery.id);
+      return;
+    }
+    if (data === 'show_statistics') {
+      if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
+        return;
+      }
+
+      await statisticsService.generateStatistics('30d', chatId, messageId, bot);
       await bot.answerCallbackQuery(callbackQuery.id);
       return;
     }
     try {
       if (data.startsWith('stats_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
 
         const period = data.replace('stats_', '');
-        await statisticsService.generateStatistics(period, chatId, bot);
+        await statisticsService.generateStatistics(period, chatId, messageId, bot);
         await bot.answerCallbackQuery(callbackQuery.id);
         return;
       }
 
       // Статистика по сотрудникам
       if (data === 'employee_stats') {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
 
-        await statisticsService.generateEmployeeStats(chatId, bot);
+        await statisticsService.generateEmployeeStats(chatId, messageId, bot);
         await bot.answerCallbackQuery(callbackQuery.id);
         return;
       }
 
       // Проблемные задачи
       if (data === 'problem_tasks') {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
 
-        await statisticsService.generateProblemTasks(chatId, bot);
+        await statisticsService.generateProblemTasks(chatId, messageId, bot);
         await bot.answerCallbackQuery(callbackQuery.id);
         return;
       }
@@ -150,7 +210,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
       // Редактирование задачи (только для владельца)
       if (data.startsWith('edit_task_')) {
         // Проверяем права доступа
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав для редактирования' });
           return;
         }
@@ -208,7 +268,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Редактирование названия
       if (data.startsWith('edit_name_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -233,7 +293,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Редактирование описания
       if (data.startsWith('edit_desc_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -258,7 +318,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Управление файлами
       if (data.startsWith('manage_files_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -271,7 +331,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Перемещение задачи владельцем
       if (data.startsWith('move_task_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -284,7 +344,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Удаление задачи
       if (data.startsWith('delete_task_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -311,7 +371,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Подтверждение удаления
       if (data.startsWith('confirm_delete_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -332,7 +392,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Перемещение в конкретный статус (владельцем)
       if (data.startsWith('owner_move_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -397,7 +457,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Добавление файлов к задаче
       if (data.startsWith('add_file_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -426,7 +486,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // Удаление файла
       if (data.startsWith('delete_file_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -512,7 +572,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
           // Формируем клавиатуру в зависимости от роли пользователя
           let keyboard = [];
-          const isOwner = username === OWNER_USERNAME;
+          const isOwner = chatId === (getOwnerUsername(chatId) || OWNER_USERNAME);
 
           if (isOwner) {
             // Клавиатура для владельца (редактирование)
@@ -565,7 +625,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
       }
       // запрос нового приоритета
       if (data.startsWith('edit_priority_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -627,7 +687,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
       }
       // Добавьте новый обработчик для установки приоритета через лейбл:
       if (data.startsWith('set_priority_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -719,7 +779,7 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
 
       // запрос нового срока выполнения
       if (data.startsWith('edit_duedate_')) {
-        if (username !== OWNER_USERNAME) {
+        if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
           await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Недостаточно прав' });
           return;
         }
@@ -891,7 +951,35 @@ function handleCallbacks(bot, userStates, taskCreationSessions) {
     }
   });
 }
+function generateHelpMessage(isPrivate, isOwner) {
+  let help = '';
 
+  if (isPrivate) {
+    help +=
+      '🤖 *Доступные команды:*\n\n' +
+      '📋 `/my_tasks` – ваши задачи\n' +
+      '❓ `/help` – эта справка\n\n';
+
+    if (isOwner) {
+      help +=
+        '🔧 *Команды владельца:*\n' +
+        '📝 `/create_task` – создать задачу\n' +
+        '📊 `/stats` – статистика\n' +
+        '📅 `/deadlines` – дедлайны\n' +
+        '🔍 `/search_tasks` – поиск/редактирование\n\n' +
+        '*Создание задач:*\n' +
+        '• `/create_task` → описание → статус → исполнитель → файлы\n\n';
+    }
+
+    help +=
+      '*Возможности:*\n' +
+      '• Просмотр назначенных задач\n' +
+      '• Перемещение задач между списками\n' +
+      '• Уведомления о новых задачах\n';
+  }
+
+  return help;
+}
 module.exports = {
   handleCallbacks
 };

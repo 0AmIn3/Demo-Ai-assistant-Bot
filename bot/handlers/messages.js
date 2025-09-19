@@ -2,7 +2,7 @@ const fs = require('fs');
 const axios = require('axios');
 const os = require('os');
 const { loadDB, saveDB } = require('../../database/db');
-const { OWNER_USERNAME } = require('../../config/constants');
+const { getOwnerUsername, OWNER_USERNAME } = require('../../config/constants');
 const { hasActiveCreationSession, escapeMarkdown, generatePassword } = require('../utils/helpers');
 const { validateEmail } = require('../utils/validation');
 const { createListSelectionKeyboard } = require('../utils/keyboards');
@@ -12,6 +12,8 @@ const plankaService = require('../services/plankaService');
 const taskService = require('../services/taskService');
 const { employeeData } = require('./commands');
 const { getChatInviteLink, fetchMainInviteLink } = require('../utils/invate');
+
+
 
 
 // Основной обработчик сообщений
@@ -47,7 +49,7 @@ function handleMessages(bot, userStates, taskCreationSessions, openai) {
 
         // НОВАЯ ЛОГИКА: Обработка создания задач в личном чате
         if (state.state === 'creating_task' && state.step === 'waiting_message') {
-          if (username !== OWNER_USERNAME) {
+          if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
             await bot.sendMessage(chatId, '❌ Создание задач доступно только владельцу');
             delete userStates[userId];
             return;
@@ -199,7 +201,7 @@ function handleVoiceMessages(bot, userStates, taskCreationSessions, openai) {
     }
 
     // Обработка голосовых сообщений с ключевыми словами (без команды)
-    if (username === OWNER_USERNAME) {
+    if (chatId === (getOwnerUsername(chatId) || OWNER_USERNAME)) {
       await handleVoiceTaskCreation(msg, userId, chatId, username, userStates, taskCreationSessions, openai, bot);
     }
   });
@@ -256,7 +258,7 @@ async function handleVoiceTaskCreation(msg, userId, chatId, username, userStates
     }
 
     // Проверяем, что пользователь - владелец
-    if (username !== require('../../config/constants').OWNER_USERNAME) {
+    if (chatId !== (getOwnerUsername(chatId) || OWNER_USERNAME)) {
       await bot.sendMessage(chatId, '❌ Создание задач доступно только владельцу');
       return;
     }
@@ -611,7 +613,7 @@ async function registerNewEmployee(data, chatId, bot) {
 
     // Проверяем существующего сотрудника
     const existingEmployee = db.employees.find(emp =>
-      emp.email === data.email || emp.telegramUserId === data.userId
+      emp.email === data.email || emp.userId === data.userId
     );
 
     if (existingEmployee) {
@@ -679,6 +681,7 @@ async function registerNewEmployee(data, chatId, bot) {
       `🔗 Адрес Planka: https://swifty.uz/`,
       { parse_mode: 'Markdown', disable_web_page_preview: true }
     );
+
     const inviteLink = await fetchMainInviteLink(bot, owner.telegramGroupId);
 
     // Отправляем ссылку на группу
@@ -716,15 +719,16 @@ async function completeExistingUserRegistration(data, userData, chatId, bot, use
 
     // Проверяем, не зарегистрирован ли уже этот пользователь в нашей системе
     const existingEmployee = db.employees.find(emp =>
-      emp.email === data.email || emp.telegramUserId === data.userId
+      emp.email === data.email || emp.userId === data.userId
     );
 
+    const inviteLink = await fetchMainInviteLink(bot, owner.telegramGroupId);
     if (existingEmployee) {
       bot.sendMessage(chatId,
         `Вы уже зарегистрированы в системе.\n\n` +
         `Имя: ${existingEmployee.name}\n` +
         `Должность: ${existingEmployee.position}\n\n` +
-        `Ссылка на группу: ${owner.inviteLink}`
+        `Ссылка на группу: ${inviteLink}`
       );
       return;
     }
@@ -750,7 +754,7 @@ async function completeExistingUserRegistration(data, userData, chatId, bot, use
       groupId: String(owner.telegramGroupId),
       groupTitle: owner.groupTitle,
       name: data.firstName || 'Не указано',
-      username: username
+      username: username, 
     };
 
     db.employees.push(employeeRecord);
@@ -765,10 +769,11 @@ async function completeExistingUserRegistration(data, userData, chatId, bot, use
       `Теперь вы можете получать задачи и уведомления.`
     );
 
+
     // Отправляем ссылку на группу
     await bot.sendMessage(chatId,
       `👥 Присоединяйтесь к рабочей группе "${owner.groupTitle}":\n\n` +
-      `${owner.inviteLink}\n\n` +
+      `${inviteLink}\n\n` +
       `Нажмите на ссылку выше, чтобы вступить в группу.`
     );
 
@@ -893,7 +898,7 @@ async function registerEmployee(data, chatId, bot) {
 
     // Проверяем существующего сотрудника
     const existingEmployee = db.employees.find(emp =>
-      emp.email === data.email || emp.telegramUserId === data.userId
+      emp.email === data.email || emp.userId === data.userId
     );
 
     if (existingEmployee) {

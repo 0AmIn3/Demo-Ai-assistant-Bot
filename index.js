@@ -1,113 +1,128 @@
+// ───────────────────────────────────────────────────────────────────────────────
+// server.js
+// ───────────────────────────────────────────────────────────────────────────────
 require('dotenv').config();
+
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
-const OpenAI = require('openai');
+const { OpenAI } = require('openai');                // v4 SDK
 
-// Импорты модулей
+// ─── внутренние модули ────────────────────────────────────────────────────────
 const { initDB } = require('./database/db');
 const { cleanupUserStates } = require('./bot/utils/helpers');
 const apiRoutes = require('./api/routes');
-const { OWNER_USERNAME } = require('./config/constants');
-// Импорты обработчиков бота
+const { getOwnerUsername } = require('./config/constants');
+
 const commands = require('./bot/handlers/commands');
 const messages = require('./bot/handlers/messages');
 const callbacks = require('./bot/handlers/callbacks');
 const DeadlineScheduler = require('./bot/services/deadlineScheduler');
 const statisticsService = require('./bot/services/statisticsService');
-// Инициализация
-const app = express();
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const plankaService = require('./bot/services/plankaService');
 
-// Инициализация базы данных
+// ─── глобальные хранилища ─────────────────────────────────────────────────────
+const userStates = {};           // состояния диалогов
+const taskCreationSessions = {};           // temp-данные при создании задач
+
+// ─── инициализация ────────────────────────────────────────────────────────────
 initDB();
-
-// Состояния пользователей и сессии
-const userStates = {}; // Для хранения состояний пользователей
-const taskCreationSessions = {}; // Временное хранилище для создания задач
-
-// Middleware
+const app = express();
 app.use(express.json());
 
-// Делаем bot доступным для API роутов
-app.set('telegramBot', bot);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// ─── рабочий бот ──────────────────────────────────────────────────────────────
+const workBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+app.set('telegramBot', workBot);
+module.exports.workBot = workBot;
 
-const deadlineScheduler = new DeadlineScheduler(bot);
+// ─── регистрационный бот ──────────────────────────────────────────────────────
+const { initRegistrationBot } = require('./bots/registrationBot');
+const regBot = initRegistrationBot(workBot, process.env.REGISTRATION_BOT_TOKEN);
+app.set('registrationBot', regBot);
 
+// ─── планировщик дедлайнов ────────────────────────────────────────────────────
+new DeadlineScheduler(workBot);
 
-
-// API роуты
+// ─── REST API ─────────────────────────────────────────────────────────────────
 app.use('/', apiRoutes);
-``
-bot.onText(/\/stats/, async (msg) => {
-  const chatId = msg.chat.id;
-  const username = msg.from.username;
 
-  if (username !== OWNER_USERNAME) {
-    await bot.sendMessage(chatId, '❌ Эта команда доступна только владельцу');
-    return;
+// ─── утилиты ──────────────────────────────────────────────────────────────────
+async function getAllTasksWithDeadlines() {
+  try {
+    const accessToken = await plankaService.getPlankaAccessToken();
+    const axios = require('axios');
+
+    const { data } = await axios.get(
+      `${process.env.PLANKA_BASE_URL}/boards/${process.env.PLANKA_BOARD_ID}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+
+    const cards = data.included.cards || [];
+    const memberships = data.included.cardMemberships || [];
+
+    return cards
+      .filter(c => c.dueDate && !c.isDueDateCompleted)
+      .map(c => ({
+        ...c,
+        assignees: memberships
+          .filter(m => m.cardId === c.id)
+          .map(m => m.userId)
+      }))
+      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  } catch (e) {
+    console.error('Planka error:', e);
+    return [];
   }
-  if (msg.chat.type !== 'private') {
-    return;
-  }
-  await statisticsService.generateStatistics('30d', chatId, bot);
+}
+
+async function fetchMainInviteLink(bot, chatId) {
+  const chat = await bot.getChat(chatId);
+  return chat.invite_link || bot.exportChatInviteLink(chatId);
+}
+
+// ─── команды, доступные только владельцу ─────────────────────────────────────
+workBot.onText(/\/stats/, async (msg) => {
+  const { id: chatId, type, messageId } = msg.chat;
+  if (chatId !== getOwnerUsername(chatId) || type !== 'private') return;
+  await statisticsService.generateStatistics('30d', chatId, messageId, workBot);
 });
 
-// Команда просмотра дедлайнов
-bot.onText(/\/deadlines/, async (msg) => {
-  const chatId = msg.chat.id;
-  const username = msg.from.username;
+workBot.onText(/\/deadlines/, async (msg) => {
+  const { id: chatId, type } = msg.chat;
+  if (chatId !== getOwnerUsername(chatId) || type !== 'private') return;
 
-  if (username !== OWNER_USERNAME) {
-    await bot.sendMessage(chatId, '❌ Эта команда доступна только владельцу');
-    return;
-  }
-  if (msg.chat.type !== 'private') {
-    return;
-  }
   try {
     const tasks = await getAllTasksWithDeadlines();
     const now = new Date();
 
-    const upcomingTasks = tasks.filter(task => {
-      const dueDate = new Date(task.dueDate);
-      const timeDiff = dueDate.getTime() - now.getTime();
-      const daysDiff = timeDiff / (1000 * 60 * 60 * 24);
-      return daysDiff <= 7 && daysDiff > 0;
+    const upcoming = tasks.filter(t => {
+      const d = new Date(t.dueDate);
+      const diffDays = (d - now) / 86_400_000;
+      return diffDays > 0 && diffDays <= 7;
     });
+    const overdue = tasks.filter(t => new Date(t.dueDate) < now);
 
-    const overdueTasks = tasks.filter(task => {
-      const dueDate = new Date(task.dueDate);
-      return dueDate < now;
-    });
-
-    let message = '📅 *Обзор дедлайнов*\n\n';
-
-    if (overdueTasks.length > 0) {
-      message += `🚨 *Просроченные задачи (${overdueTasks.length}):*\n`;
-      overdueTasks.slice(0, 5).forEach((task, index) => {
-        const dueDate = new Date(task.dueDate);
-        const overdueDays = Math.floor((now - dueDate) / (1000 * 60 * 60 * 24));
-        message += `${index + 1}. ${task.name} (просрочено на ${overdueDays}д)\n`;
+    let out = '📅 *Обзор дедлайнов*\n\n';
+    if (overdue.length) {
+      out += `🚨 *Просроченные (${overdue.length}):*\n`;
+      overdue.slice(0, 5).forEach((t, i) => {
+        const days = Math.floor((now - new Date(t.dueDate)) / 86_400_000);
+        out += `${i + 1}. ${t.name} (на ${days}д просрочено)\n`;
       });
-      message += '\n';
+      out += '\n';
     }
-
-    if (upcomingTasks.length > 0) {
-      message += `⏰ *Ближайшие дедлайны (${upcomingTasks.length}):*\n`;
-      upcomingTasks.slice(0, 5).forEach((task, index) => {
-        const dueDate = new Date(task.dueDate);
-        const daysDiff = Math.floor((dueDate - now) / (1000 * 60 * 60 * 24));
-        message += `${index + 1}. ${task.name} (через ${daysDiff}д)\n`;
+    if (upcoming.length) {
+      out += `⏰ *Ближайшие (${upcoming.length}):*\n`;
+      upcoming.slice(0, 5).forEach((t, i) => {
+        const days = Math.floor((new Date(t.dueDate) - now) / 86_400_000);
+        out += `${i + 1}. ${t.name} (через ${days}д)\n`;
       });
     }
+    if (!overdue.length && !upcoming.length)
+      out += '✅ Нет критичных дедлайнов на ближайшую неделю';
 
-    if (overdueTasks.length === 0 && upcomingTasks.length === 0) {
-      message += '✅ Нет критичных дедлайнов на ближайшую неделю';
-    }
-
-    await bot.sendMessage(chatId, message, {
+    await workBot.sendMessage(chatId, out, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
@@ -116,192 +131,91 @@ bot.onText(/\/deadlines/, async (msg) => {
         ]
       }
     });
-
-  } catch (error) {
-    console.error('Ошибка получения дедлайнов:', error);
-    await bot.sendMessage(chatId, '❌ Ошибка при получении информации о дедлайнах');
+  } catch (e) {
+    console.error(e);
+    workBot.sendMessage(chatId, '❌ Ошибка при получении дедлайнов');
   }
 });
-bot.onText(/\/link/, (msg) => {
-  const chatId = msg.chat.id;
-console.log(fetchMainInviteLink(bot, chatId));
 
-  // bot.sendMessage(chatId, `Here's the invite link: ${fetchMainInviteLink(bot, chatId)}`);
-  // bot.exportChatInviteLink(chatId)
-  //   .then((inviteLink) => {
-  //     
-  //   })
-  //   .catch((error) => {
-  //     console.error("Error exporting invite link:", error);
-  //     bot.sendMessage(chatId, "Error creating invite link.");
-  //   });
-});
+workBot.onText(/\/owner_help/, async (msg) => {
+  const { id: chatId, type } = msg.chat;
+  if (chatId !== getOwnerUsername(chatId) || type !== 'private') return;
 
-async function fetchMainInviteLink(bot, chatId) {
-  const chat = await bot.getChat(chatId);
-  console.log(chat);
-       // Chat объект
-  if (chat.invite_link) {
-    console.log("Invite link already exists:", chat.invite_link);
-    
-    return chat.invite_link;                   // ничего не сломали
-  }
-  // ссылки нет – создадим её
-  return await bot.exportChatInviteLink(chatId);
-}
-// Обновленная команда помощи для владельца
-bot.onText(/\/owner_help/, async (msg) => {
-  const chatId = msg.chat.id;
-  const username = msg.from.username;
+  await workBot.sendMessage(chatId,
+    `🔧 *Команды владельца*  
 
-  if (username !== OWNER_USERNAME) {
-    await bot.sendMessage(chatId, '❌ Эта команда доступна только владельцу');
-    return;
-  }
-  if (msg.chat.type !== 'private') {
-    return;
-  }
-  const helpMessage = `
-🔧 *Команды владельца:*
+• /stats – статистика  
+• /deadlines – обзор дедлайнов  
 
-📊 */stats* - Показать статистику по задачам
-📅 */deadlines* - Обзор дедлайнов  
+🔔 Уведомления  
+• напоминания сотрудникам: 24 ч / 6 ч / 2 ч  
+• оповещения владельцу о просрочках  
 
-📋 *Доступная статистика:*
-• Общие показатели выполнения
-• Детальная статистика по сотрудникам
-• Анализ по приоритетам и статусам
-• Статус проблемных задач
-
-🔔 *Система уведомлений:*
-• Сотрудники: напоминания за 24ч, 6ч, 2ч до дедлайна
-• Владелец: уведомления о просроченных задачах
-• Ежедневный дайджест (9:00 по Ташкенту)
-
-⚙️ *Автоматические функции:*
-• Проверка дедлайнов каждые 30 минут
-• Умное определение приоритетов через лейблы
-• Автоназначение исполнителей при создании задач
-`;
-
-  await bot.sendMessage(chatId, helpMessage, {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '📊 Статистика', callback_data: 'show_statistics' },
-          { text: '📅 Дедлайны', callback_data: 'show_deadlines' }
-        ]
-      ]
-    }
+⚙️ Автоматизация  
+• проверка дедлайнов – каждые 30 мин  
+• авто-назначение исполнителей  
+`, {
+    parse_mode: 'Markdown'
   });
 });
 
-// Вспомогательная функция
-async function getAllTasksWithDeadlines() {
-  try {
-    const plankaService = require('./bot/services/plankaService');
-    const accessToken = await plankaService.getPlankaAccessToken();
-    const axios = require('axios');
+workBot.onText(/\/link/, async (msg) => {
+  const link = await fetchMainInviteLink(workBot, msg.chat.id);
+  console.log(link); // если нужно – отправьте пользователю
+});
 
-    const response = await axios.get(
-      `${process.env.PLANKA_BASE_URL}/boards/${process.env.PLANKA_BOARD_ID}`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      }
-    );
+// ─── публичная /chatinfo ─────────────────────────────────────────────────────
+workBot.onText(/\/chatinfo/, (msg) => {
+  const chat = msg.chat;
+  const info = `Информация о чате:
 
-    const cards = response.data.included.cards || [];
-    const cardMemberships = response.data.included.cardMemberships || [];
+*ID:* \`${chat.id}\`
+*Тип:* ${chat.type}
+*Название:* ${chat.title || chat.first_name || '—'}
+*Username:* @${chat.username || '—'}
 
-    return cards
-      .filter(card => card.dueDate && !card.isDueDateCompleted)
-      .map(card => ({
-        ...card,
-        assignees: cardMemberships
-          .filter(membership => membership.cardId === card.id)
-          .map(membership => membership.userId)
-      }))
-      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-  } catch (error) {
-    console.error('Ошибка получения задач с дедлайнами:', error);
-    return [];
-  }
-}
+${chat.type === 'group' ? 'Обычная группа' : ''}
+${chat.type === 'supergroup' ? 'Супергруппа' : ''}
+${chat.type === 'private' ? 'Личный чат' : ''}`;
+  workBot.sendMessage(chat.id, info, { parse_mode: 'Markdown' });
+});
 
+// ─── подключаем кастомные обработчики из ваших модулей ───────────────────────
+commands.handleStartWithParam(workBot, userStates);
+commands.handleStart(workBot);
+commands.handleCreateTask(workBot, userStates, taskCreationSessions);
+commands.handleMyTasks(workBot);
+commands.handleSearchTasks(workBot, userStates);
+commands.handleDone(workBot, userStates);
+commands.handleHelp(workBot);
 
+messages.handleMessages(workBot, userStates, taskCreationSessions, openai);
+messages.handleVoiceMessages(workBot, userStates, taskCreationSessions, openai);
+messages.handleDocuments(workBot, userStates, taskCreationSessions);
+messages.handlePhotos(workBot, userStates, taskCreationSessions);
 
-bot.onText(/\/chatinfo/, (msg) => {
-  const chatId = msg.chat.id;
+callbacks.handleCallbacks(workBot, userStates, taskCreationSessions);
 
-  const chatInfo = `Информация о чате:
-
-**ID чата:** \`${chatId}\`
-**Тип чата:** ${msg.chat.type}
-**Название:** ${msg.chat.title || msg.chat.first_name || 'Не указано'}
-**Username:** @${msg.chat.username || 'Не указан'}
-
-${msg.chat.type === 'group' ? ' Это обычная группа' : ''}
-${msg.chat.type === 'supergroup' ? ' Это супергруппа' : ''}
-${msg.chat.type === 'private' ? ' Это личный чат' : ''}`;
-
-  bot.sendMessage(chatId, chatInfo, { parse_mode: 'Markdown' });
-}); ``
-// Настройка обработчиков команд
-commands.handleStartWithParam(bot, userStates);
-commands.handleStart(bot);
-commands.handleCreateTask(bot, userStates, taskCreationSessions);
-commands.handleMyTasks(bot);
-commands.handleSearchTasks(bot, userStates);
-commands.handleDone(bot, userStates);
-commands.handleHelp(bot);
-
-// Настройка обработчиков сообщений
-messages.handleMessages(bot, userStates, taskCreationSessions, openai);
-messages.handleVoiceMessages(bot, userStates, taskCreationSessions, openai);
-messages.handleDocuments(bot, userStates, taskCreationSessions);
-messages.handlePhotos(bot, userStates, taskCreationSessions);
-
-// Настройка обработчиков callback'ов
-callbacks.handleCallbacks(bot, userStates, taskCreationSessions);
-
-// Очистка старых состояний каждый час
+// ─── служебные задачи ────────────────────────────────────────────────────────
 setInterval(() => cleanupUserStates(userStates), 60 * 60 * 1000);
 
-// Обработка ошибок бота
-bot.on('polling_error', (error) => {
-  console.error('Polling error:', error);
+// ─── обработка ошибок ────────────────────────────────────────────────────────
+workBot.on('polling_error', err => console.error('Polling:', err));
+workBot.on('error', err => console.error('Bot:', err));
+process.on('uncaughtException', err => {
+  console.error('Uncaught:', err);
+  Object.keys(userStates).forEach(id => delete userStates[id]);
 });
 
-bot.on('error', (error) => {
-  console.error('Bot error:', error);
-});
-
-// Обработка ошибок состояний
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  // Очищаем состояния при критических ошибках
-  Object.keys(userStates).forEach(userId => {
-    delete userStates[userId];
+// ─── graceful shutdown ───────────────────────────────────────────────────────
+['SIGINT', 'SIGTERM'].forEach(sig => {
+  process.once(sig, () => {
+    console.log('Stopping bot...');
+    workBot.stopPolling();
+    process.exit(0);
   });
 });
 
-// Graceful shutdown
-process.once('SIGINT', () => {
-  console.log('Stopping bot...');
-  bot.stopPolling();
-  process.exit(0);
-});
-
-process.once('SIGTERM', () => {
-  console.log('Stopping bot...');
-  bot.stopPolling();
-  process.exit(0);
-});
-
-// Запуск сервера
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log('Telegram bot is running...');
-});
+// ─── запуск HTTP-сервера ─────────────────────────────────────────────────────
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server & bots running on :${PORT}`));

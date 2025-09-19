@@ -7,56 +7,37 @@ const router = express.Router();
 
 // Регистрация владельца и создание ссылки
 router.post('/register-owner', async (req, res) => {
-  const { telegramGroupId } = req.body;
 
-  if (!telegramGroupId) {
-    return res.status(400).json({ error: 'telegramGroupId is required' });
-  }
 
   const db = loadDB();
-  const ownerId = Date.now().toString();
+  const ownerId = Date.now().toString(); // простой уникальный id
 
-  let inviteLink;
-  try {
-    // Получаем bot из контекста приложения
-    const bot = req.app.get('telegramBot');
-    inviteLink = await bot.exportChatInviteLink(telegramGroupId);
-  } catch (error) {
-    console.error('Error generating invite link:', error);
-    return res.status(400).json({
-      error: 'Unable to generate invite link. Ensure bot is group admin.',
-      details: error.message
-    });
-  }
 
-  let groupInfo;
-  try {
-    const bot = req.app.get('telegramBot');
-    groupInfo = await bot.getChat(telegramGroupId);
-  } catch (error) {
-    console.error('Error getting group info:', error);
-    groupInfo = { title: 'Unknown Group' };
-  }
+  // --- 2. заголовок группы ------------------------------------------
+  let groupInfo = { title: 'Unknown group' };
+ 
 
-  const ownerData = {
+  // --- 3. сохраняем владельца (пока без username / chatId) ----------
+  db.owners.push({
     id: ownerId,
-    telegramGroupId,
-    inviteLink,
+    telegramGroupId: null,
+    inviteLink: null,
     groupTitle: groupInfo.title,
+    username: null,
+    chatId: null,
     createdAt: new Date().toISOString()
-  };
-
-  db.owners.push(ownerData);
+  });
   saveDB(db);
 
-  const bot = req.app.get('telegramBot');
-  const botInfo = await bot.getMe();
-  const startLink = `https://t.me/${botInfo.username}?start=${ownerId}`;
+  // --- 4. отдаём ссылку на регистрационного бота --------------------
+  const regBot = req.app.get('registrationBot');
+  const regInfo = await regBot.getMe();
+  const startLink = `https://t.me/${regInfo.username}?start=${ownerId}`;
 
-  res.json({
-    startLink,
+  return res.json({
+    ownerId,
     groupTitle: groupInfo.title,
-    ownerId
+    startLink
   });
 });
 

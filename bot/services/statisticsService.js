@@ -4,14 +4,14 @@ const plankaService = require('./plankaService');
 const { escapeMarkdown } = require('../utils/helpers');
 
 class StatisticsService {
-  async generateStatistics(period = '30d', chatId, bot) {
+  async generateStatistics(period = '30d', chatId, msgId, bot) {
     try {
       const stats = await this.collectStatistics(period);
       const message = this.formatStatisticsMessage(stats, period);
-      
-      await bot.sendMessage(chatId, message, {
+
+      const opts = {
         parse_mode: 'Markdown',
-        reply_markup: {
+        reply_markup: {  // та же клавиатура, что была
           inline_keyboard: [
             [
               { text: '📊 7 дней', callback_data: 'stats_7d' },
@@ -29,10 +29,17 @@ class StatisticsService {
             ]
           ]
         }
-      });
-    } catch (error) {
-      console.error('Ошибка генерации статистики:', error);
-      await bot.sendMessage(chatId, '❌ Ошибка при формировании статистики');
+      };
+
+      if (msgId) {
+        await bot.editMessageText(message, { chat_id: chatId, message_id: msgId, ...opts });
+      } else {
+        await bot.sendMessage(chatId, message, opts);
+      }
+
+    } catch (e) {
+      console.error('generateStatistics:', e);
+      await this.safeReply(bot, chatId, msgId, '❌ Ошибка при формировании статистики');
     }
   }
 
@@ -40,7 +47,7 @@ class StatisticsService {
     const tasks = await this.getAllTasks();
     const db = loadDB();
     const employees = db.employees || [];
-    
+
     const periodMs = this.getPeriodMs(period);
     const cutoffDate = period === 'all' ? new Date(0) : new Date(Date.now() - periodMs);
 
@@ -56,13 +63,13 @@ class StatisticsService {
 
     // Статистика по приоритетам
     const priorityStats = await this.calculatePriorityStats(periodTasks);
-    
+
     // Статистика по исполнителям
     const employeeStats = await this.calculateEmployeeStats(periodTasks, employees);
-    
+
     // Среднее время выполнения
     const avgCompletionTime = this.calculateAverageCompletionTime(completedTasks);
-    
+
     // Статистика по спискам (статусам)
     const listStats = await this.calculateListStats(periodTasks);
 
@@ -116,12 +123,14 @@ class StatisticsService {
 
   isTaskCompleted(task) {
     const completedStatuses = ['Готово', 'Выполнено', 'Done', 'Completed', 'Завершено'];
-    return completedStatuses.some(status => 
+    return completedStatuses.some(status =>
       task.listName.toLowerCase().includes(status.toLowerCase())
     );
   }
 
   isTaskOverdue(task) {
+    if (this.isTaskCompleted(task)) return false;
+
     if (!task.dueDate || task.isDueDateCompleted) return false;
     return new Date(task.dueDate) < new Date();
   }
@@ -135,15 +144,15 @@ class StatisticsService {
     };
 
     tasks.forEach(task => {
-      const hasHighPriority = task.labels.some(label => 
-        ['высокий', 'high', 'срочно', 'urgent', 'критический', 'critical'].some(p => 
+      const hasHighPriority = task.labels.some(label =>
+        ['высокий', 'high', 'срочно', 'urgent', 'критический', 'critical'].some(p =>
           label.toLowerCase().includes(p)
         )
       );
-      const hasLowPriority = task.labels.some(label => 
+      const hasLowPriority = task.labels.some(label =>
         ['низкий', 'low'].some(p => label.toLowerCase().includes(p))
       );
-      const hasMediumPriority = task.labels.some(label => 
+      const hasMediumPriority = task.labels.some(label =>
         ['средний', 'medium', 'normal'].some(p => label.toLowerCase().includes(p))
       );
 
@@ -204,7 +213,7 @@ class StatisticsService {
 
   async calculateListStats(tasks) {
     const listMap = {};
-    
+
     tasks.forEach(task => {
       if (!listMap[task.listName]) {
         listMap[task.listName] = 0;
@@ -218,14 +227,13 @@ class StatisticsService {
   formatStatisticsMessage(stats, period) {
     const periodText = {
       '7d': '7 дней',
-      '30d': '30 дней', 
+      '30d': '30 дней',
       '90d': '90 дней',
       'all': 'весь период'
     }[period] || period;
 
     let message = `📊 *Статистика за ${periodText}*\n\n`;
-    console.log(stats);
-    
+
     // Общая статистика
     message += `📋 *Общие показатели:*\n`;
     message += `• Всего задач: ${stats.totalTasks}\n`;
@@ -247,7 +255,7 @@ class StatisticsService {
     if (stats.employeeStats.length > 0) {
       message += `👥 *Топ исполнителей:*\n`;
       stats.employeeStats.slice(0, 5).forEach((emp, index) => {
-        const completionRate = emp.totalTasks > 0 ? 
+        const completionRate = emp.totalTasks > 0 ?
           Math.round(emp.completedTasks / emp.totalTasks * 100) : 0;
         message += `${index + 1}. ${escapeMarkdown(emp.name)}: ${emp.completedTasks}/${emp.totalTasks} (${completionRate}%)\n`;
       });
@@ -263,92 +271,97 @@ class StatisticsService {
     return message;
   }
 
-  async generateEmployeeStats(chatId, bot) {
+  async generateEmployeeStats(chatId, msgId, bot) {
     try {
       const tasks = await this.getAllTasks();
-      const db = loadDB();
-      const employees = db.employees || [];
-      
-      const employeeStats = await this.calculateEmployeeStats(tasks, employees);
-      
-      let message = `👥 *Детальная статистика по сотрудникам*\n\n`;
-      
-      if (employeeStats.length === 0) {
+      const employees = loadDB().employees || [];
+      const empStats = await this.calculateEmployeeStats(tasks, employees);
+
+      let message = '👥 *Детальная статистика по сотрудникам*\n\n';
+      if (empStats.length === 0) {
         message += 'Нет данных по сотрудникам';
       } else {
-        employeeStats.forEach((emp, index) => {
-          const completionRate = emp.totalTasks > 0 ? 
-            Math.round(emp.completedTasks / emp.totalTasks * 100) : 0;
-          
-          message += `${index + 1}. *${escapeMarkdown(emp.name)}*\n`;
-          message += `   📋 Всего задач: ${emp.totalTasks}\n`;
-          message += `   ✅ Выполнено: ${emp.completedTasks} (${completionRate}%)\n`;
-          message += `   ⚠️ Просрочено: ${emp.overdueTasks}\n\n`;
+        empStats.forEach((emp, i) => {
+          const rate = emp.totalTasks ? Math.round(emp.completedTasks / emp.totalTasks * 100) : 0;
+          message += `${i + 1}. *${escapeMarkdown(emp.name)}*\n` +
+            `   📋 Всего: ${emp.totalTasks}\n` +
+            `   ✅ Выполнено: ${emp.completedTasks} (${rate}%)\n` +
+            `   ⚠️ Просрочено: ${emp.overdueTasks}\n\n`;
         });
       }
 
-      await bot.sendMessage(chatId, message, {
+      const opts = {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [[
             { text: '🔙 Назад к статистике', callback_data: 'show_statistics' }
           ]]
         }
-      });
+      };
+
+      if (msgId) {
+        await bot.editMessageText(message, { chat_id: chatId, message_id: msgId, ...opts });
+      } else {
+        await bot.sendMessage(chatId, message, opts);
+      }
     } catch (error) {
-      console.error('Ошибка генерации статистики по сотрудникам:', error);
-      await bot.sendMessage(chatId, '❌ Ошибка при формировании статистики по сотрудникам');
+      console.error('generateEmployeeStats:', e);
+      await this.safeReply(bot, chatId, msgId, '❌ Ошибка при формировании статистики по сотрудникам');
     }
   }
 
-  async generateProblemTasks(chatId, bot) {
+  async generateProblemTasks(chatId, msgId, bot) {
     try {
       const tasks = await this.getAllTasks();
-      const overdueTasks = tasks.filter(task => this.isTaskOverdue(task));
+      const overdueTasks = tasks.filter(t => this.isTaskOverdue(t));
       const db = loadDB();
-      
-      let message = `⚠️ *Проблемные задачи*\n\n`;
-      
+
+      let message = '⚠️ *Проблемные задачи*\n\n';
       if (overdueTasks.length === 0) {
         message += '✅ Просроченных задач нет!';
       } else {
         message += `Найдено просроченных задач: ${overdueTasks.length}\n\n`;
-        
-        overdueTasks.slice(0, 10).forEach((task, index) => {
-          const dueDate = new Date(task.dueDate);
-          const overdueDays = Math.floor((Date.now() - dueDate.getTime()) / (1000 * 60 * 60 * 24));
-          
-          // Получаем имена исполнителей
-          const assigneeNames = task.assignees.map(assigneeId => {
-            const employee = db.employees.find(emp => emp.plankaUserId === assigneeId);
-            return employee ? employee.name : 'Неизвестный';
-          });
-          
-          message += `${index + 1}. *${escapeMarkdown(task.name)}*\n`;
-          message += `   📅 Просрочено на: ${overdueDays} дней\n`;
-          message += `   👤 Исполнители: ${assigneeNames.join(', ') || 'Не назначены'}\n`;
-          message += `   📂 Статус: ${escapeMarkdown(task.listName)}\n\n`;
+        overdueTasks.slice(0, 10).forEach((t, i) => {
+          const days = Math.floor((Date.now() - new Date(t.dueDate)) / 86400000);
+          const names = t.assignees
+            .map(id => db.employees.find(e => e.plankaUserId === id)?.name || 'Неизвестный')
+            .join(', ') || 'Не назначены';
+          message += `${i + 1}. *${escapeMarkdown(t.name)}*\n` +
+            `   📅 Просрочено на: ${days} дн.\n` +
+            `   👤 Исполнители: ${names}\n` +
+            `   📂 Статус: ${escapeMarkdown(t.listName)}\n\n`;
         });
-        
         if (overdueTasks.length > 10) {
-          message += `... и еще ${overdueTasks.length - 10} задач`;
+          message += `…и ещё ${overdueTasks.length - 10} задач`;
         }
       }
 
-      await bot.sendMessage(chatId, message, {
+      const opts = {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [[
             { text: '🔙 Назад к статистике', callback_data: 'show_statistics' }
           ]]
         }
-      });
+      };
+
+      if (msgId) {
+        await bot.editMessageText(message, { chat_id: chatId, message_id: msgId, ...opts });
+      } else {
+        await bot.sendMessage(chatId, message, opts);
+      }
     } catch (error) {
-      console.error('Ошибка генерации проблемных задач:', error);
-      await bot.sendMessage(chatId, '❌ Ошибка при формировании списка проблемных задач');
+      console.error('generateProblemTasks:', e);
+      await this.safeReply(bot, chatId, msgId, '❌ Ошибка при формировании списка проблемных задач');
     }
   }
-
+  async safeReply(bot, chatId, msgId, text) {
+    if (msgId) {
+      await bot.editMessageText(text, { chat_id: chatId, message_id: msgId });
+    } else {
+      await bot.sendMessage(chatId, text);
+    }
+  }
   getPeriodMs(period) {
     const periods = {
       '7d': 7 * 24 * 60 * 60 * 1000,

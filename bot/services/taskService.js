@@ -4,17 +4,30 @@ const { loadDB, saveDB } = require('../../database/db');
 const { escapeMarkdown } = require('../utils/helpers');
 const plankaService = require('./plankaService');
 const { createTaskReturnButton } = require('../utils/helpers');
-const { OWNER_USERNAME } = require('../../config/constants')
+const { getOwnerUsername, OWNER_USERNAME } = require('../../config/constants')
 // Функция отображения задач пользователя
 async function showUserTasks(userId, chatId, bot) {
   try {
     const db = loadDB();
-    const employee = db.employees.find(emp => emp.telegramUserId == userId);
 
-    if (!employee) {
+    const employeeObj = db.employees.find(emp => emp.userId == userId);
+    const ownerObj = db.owners.find(emp => emp.chatId == userId);
+    const employee = db.employees.some(e => e.userId === userId);
+    const owner = db.owners.some(o => o.chatId === userId);
+
+    // Пользователь не найден ни среди сотрудников, ни среди владельцев
+    if (!employee && !owner) {
       await bot.sendMessage(chatId, '❌ Вы не зарегистрированы в системе');
       return;
     }
+    // if (!employee) {
+    //   if (!owner) {
+    //     await bot.sendMessage(chatId, '❌ Вы не зарегистрированы в системе');
+    //     return;
+    //   }
+    //   await bot.sendMessage(chatId, '❌ Вы не зарегистрированы в системе');
+    //   return;
+    // }
 
     const accessToken = await plankaService.getPlankaAccessToken();
 
@@ -38,8 +51,9 @@ async function showUserTasks(userId, chatId, bot) {
 
     // Находим карточки, где пользователь является участником
     const userCardIds = cardMemberships
-      .filter(membership => membership.userId === employee.plankaUserId)
+      .filter(membership => membership.userId === employeeObj.plankaUserId)
       .map(membership => membership.cardId);
+
 
     const userCards = cards.filter(card => userCardIds.includes(card.id));
 
@@ -55,9 +69,10 @@ async function showUserTasks(userId, chatId, bot) {
     lists.forEach(list => {
       listMap[list.id] = list.name;
     });
-    const isOwner = employee.username === OWNER_USERNAME;
+    const isOwner = employeeObj.userId === (getOwnerUsername(chatId) || OWNER_USERNAME);
 
-    // Формируем клавиатуру с задачами
+    // Формируем
+    //  клавиатуру с задачами
     const keyboard = userCards.map(card => ([{
       text: `${card.name} (${listMap[card.listId] || 'Неизвестный статус'})`,
       callback_data: isOwner ? `edit_task_${card.id}` : `view_task_${card.id}`
@@ -127,7 +142,7 @@ async function searchTasks(query, chatId, bot, username) {
       return;
     }
 
-    const isOwner = username === OWNER_USERNAME;
+    const isOwner = chatId === (getOwnerUsername(chatId) || OWNER_USERNAME);
 
     const keyboard = filteredCards.slice(0, 10).map(card => ([{
       text: `${card.name} (${listMap[card.listId] || 'Неизвестный статус'})1`,
@@ -655,7 +670,7 @@ async function notifyAssignee(cardData, assigneeId, bot) {
     const db = loadDB();
     const employee = db.employees.find(emp => emp.plankaUserId == assigneeId);
 
-    if (!employee || !employee.telegramChatId) {
+    if (!employee || !employee.userId) {
       console.log('Исполнитель не найден в базе или нет Telegram ID');
       return;
     }
@@ -674,12 +689,12 @@ async function notifyAssignee(cardData, assigneeId, bot) {
     message += `🔗 *Ссылка на карточку:* https://swifty.uz/cards/${cardData.id}\n\n` +
       `Используйте команду /my\\_tasks для просмотра всех ваших задач`;
 
-    const isOwner = employee.username === OWNER_USERNAME;
+    const isOwner = employee.userId === (getOwnerUsername(employee.userId) || OWNER_USERNAME);
     const taskButtonData = isOwner ? `edit_task_${cardData.id}` : `view_task_${cardData.id}`;
     const taskButtonText = isOwner ? '✏️ Редактировать задачу' : '👁 Посмотреть задачу';
 
 
-    await bot.sendMessage(employee.telegramChatId, message, {
+    await bot.sendMessage(employee.userId, message, {
       parse_mode: 'Markdown',
       disable_web_page_preview: true,
       reply_markup: {

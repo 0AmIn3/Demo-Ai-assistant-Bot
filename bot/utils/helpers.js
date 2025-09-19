@@ -1,4 +1,4 @@
-const { OWNER_USERNAME } = require('../../config/constants');
+const { getOwnerUsername, OWNER_USERNAME } = require('../../config/constants');
 
 /**
  * Генерирует правильную кнопку для просмотра/редактирования задачи
@@ -7,7 +7,7 @@ const { OWNER_USERNAME } = require('../../config/constants');
  * @returns {Object} Объект кнопки для inline_keyboard
  */
 function createTaskViewButton(cardId, username) {
-  const isOwner = username === OWNER_USERNAME;
+  const isOwner = cardId === (getOwnerUsername(cardId) || OWNER_USERNAME);
 
   return {
     text: isOwner ? '✏️ Редактировать задачу' : '👁 Посмотреть задачу',

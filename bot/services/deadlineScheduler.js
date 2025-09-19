@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { loadDB, saveDB } = require('../../database/db');
-const { OWNER_USERNAME } = require('../../config/constants');
+const { getOwnerUsername, OWNER_USERNAME  } = require('../../config/constants');
 const plankaService = require('../services/plankaService');
 const { escapeMarkdown } = require('../utils/helpers');
 const axios = require('axios');
@@ -120,7 +120,7 @@ class DeadlineScheduler {
 
       for (const assigneeId of task.assignees) {
         const employee = db.employees.find(emp => emp.plankaUserId === assigneeId);
-        if (!employee || !employee.telegramChatId) continue;
+        if (!employee || !employee.userId) continue;
 
         const dueDate = new Date(task.dueDate);
         const timeLeft = this.formatTimeLeft(hoursLeft);
@@ -136,7 +136,7 @@ class DeadlineScheduler {
           `📅 *Дедлайн:* ${dueDate.toLocaleString('ru-RU')}\n` +
           `🔗 *Ссылка:* https://swifty.uz/cards/${task.id}`;
 
-        await this.bot.sendMessage(employee.telegramChatId, message, {
+        await this.bot.sendMessage(employee.userId, message, {
           parse_mode: 'Markdown',
           disable_web_page_preview: true,
           reply_markup: {
@@ -174,8 +174,8 @@ class DeadlineScheduler {
         return;
       }
 
-      const ownerEmployee = db.employees.find(emp => emp.username === OWNER_USERNAME);
-      if (!ownerEmployee || !ownerEmployee.telegramChatId) return;
+      const ownerEmployee = db.employees.find(emp => emp.username === (getOwnerUsername(null) || OWNER_USERNAME));
+      if (!ownerEmployee || !ownerEmployee.userId) return;
 
       const dueDate = new Date(task.dueDate);
       const overdueTime = this.formatTimeLeft(hoursOverdue);
@@ -195,7 +195,7 @@ class DeadlineScheduler {
         `👥 *Исполнители:* ${assigneeNames.join(', ') || 'Не назначены'}\n` +
         `🔗 *Ссылка:* https://swifty.uz/cards/${task.id}`;
 
-      await this.bot.sendMessage(ownerEmployee.telegramChatId, message, {
+      await this.bot.sendMessage(ownerEmployee.userId, message, {
         parse_mode: 'Markdown',
         disable_web_page_preview: true,
         reply_markup: {
@@ -218,8 +218,8 @@ class DeadlineScheduler {
   async sendDailyDigest(tasks, period) {
     try {
       const db = loadDB();
-      const ownerEmployee = db.employees.find(emp => emp.username === OWNER_USERNAME);
-      if (!ownerEmployee || !ownerEmployee.telegramChatId) return;
+      const ownerEmployee = db.employees.find(emp => emp.username === (getOwnerUsername(null) || OWNER_USERNAME));
+      if (!ownerEmployee || !ownerEmployee.userId) return;
 
       let message = `📅 *Задачи на ${period}* (${tasks.length})\n\n`;
 
@@ -231,7 +231,7 @@ class DeadlineScheduler {
         message += `   ⏰ ${timeStr}\n\n`;
       }
 
-      await this.bot.sendMessage(ownerEmployee.telegramChatId, message, {
+      await this.bot.sendMessage(ownerEmployee.userId, message, {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [[

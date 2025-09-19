@@ -18,7 +18,7 @@ function createAssigneeKeyboard(employees) {
   const keyboard = employees.map(emp => {
     const buttonText = emp.name +
       (emp.position ? ` (${emp.position})` : '') +
-      (emp.telegramUserId ? ' 📱' : '');
+      (emp.userId ? ' 📱' : '');
 
     return [{
       text: buttonText,
